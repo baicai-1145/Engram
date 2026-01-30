@@ -1,0 +1,70 @@
+# Engram training config (single GPU).
+#
+# This is intended to be comparable to configs/baseline.yaml (same data + training),
+# with only Engram injection and optimizer param groups differing.
+
+seed: 0
+trust_remote_code: true
+
+# Prefer local path to avoid network access.
+model_name_or_path: ./Qwen3-0.6B-Base
+
+data:
+  mode: cpt  # cpt | sft
+  seq_len: 2048
+  train_files:
+    - ./data/train.jsonl
+  eval_files:
+    - ./data/eval.jsonl
+  text_field: text
+  prompt_field: prompt
+  response_field: response
+  packing: false
+
+training:
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-5
+  weight_decay: 0.0
+  warmup_steps: 50
+  max_steps: 200
+  lr_scheduler_type: cosine
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 100
+  save_total_limit: 2
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
+  dataloader_num_workers: 2
+
+engram:
+  enabled: true
+  # D6: layer_index_base + layers must match your code's block indexing.
+  # If you want "paper layers [2,15]" in 1-based numbering, set layer_index_base=1 and layers=[2,15].
+  layer_index_base: 0
+  layers: [2, 15]
+
+  max_ngram: 3
+  num_heads: 8
+
+  # Base (non-prime) sizes; actual per-head sizes are chosen as distinct primes >= base.
+  # NOTE: With per-layer tables, total_rows scales with (#layers * (N-1) * K * base_size).
+  table_size_per_ngram: [500000, 500000]  # for 2-gram, 3-gram
+
+  # Optional: override. If omitted, uses hidden_size//2.
+  d_mem: null
+  kernel_size: 4
+
+  # Alignments (D6/D7)
+  tokenizer_compression_mode: demo  # demo | paper
+  gating_mode: paper               # paper | demo
+  init_equivalence: zero_output    # zero_output | none
+
+  # Paper: Engram params use lr scaled by 5x and wd=0.
+  lr_scale: 5.0
+
+  # Cache lookup table on disk to avoid scanning vocab every run.
+  cache_dir: .cache/engram
+

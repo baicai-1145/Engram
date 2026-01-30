@@ -1,0 +1,12 @@
+# Minimal runtime dependencies (versions intentionally not pinned here).
+# Pin exact versions after the first successful end-to-end run.
+
+torch
+transformers
+accelerate
+tokenizers
+pyyaml
+numpy
+tqdm
+sympy
+

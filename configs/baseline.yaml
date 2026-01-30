@@ -1,0 +1,44 @@
+# Baseline config for single-GPU training.
+#
+# Expected data formats:
+# - CPT (mode=cpt): JSONL lines like {"text": "..."}
+# - SFT (mode=sft): JSONL lines like {"prompt": "...", "response": "..."}
+
+seed: 0
+trust_remote_code: true
+
+# Prefer local path to avoid any network access.
+model_name_or_path: ./Qwen3-0.6B-Base
+
+data:
+  mode: cpt  # cpt | sft
+  seq_len: 2048
+  train_files:
+    - ./data/train.jsonl
+  eval_files:
+    - ./data/eval.jsonl
+  # For CPT records:
+  text_field: text
+  # For SFT records:
+  prompt_field: prompt
+  response_field: response
+  packing: false
+
+training:
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-5
+  weight_decay: 0.0
+  warmup_steps: 50
+  max_steps: 200
+  lr_scheduler_type: cosine
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 100
+  save_total_limit: 2
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
+  dataloader_num_workers: 2
+
