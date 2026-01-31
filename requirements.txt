@@ -5,8 +5,9 @@ torch
 transformers
 accelerate
 tokenizers
+datasets
+pyarrow
 pyyaml
 numpy
 tqdm
 sympy
-

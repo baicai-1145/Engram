@@ -1,0 +1,49 @@
+# OpenThoughts3-1.2M (local parquet) + Engram (single GPU) starter config.
+
+seed: 0
+trust_remote_code: true
+model_name_or_path: ./Qwen3-0.6B-Base
+
+data:
+  format: parquet
+  mode: sft
+  seq_len: 2048
+  train_files:
+    - OpenThoughts3-1.2M/data/train-*.parquet
+  eval_files: []
+
+  # OpenThoughts schema:
+  conversation_field: conversations
+  conversation_from_field: from
+  conversation_value_field: value
+
+training:
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-5
+  weight_decay: 0.0
+  warmup_steps: 50
+  max_steps: 200
+  lr_scheduler_type: cosine
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 0
+  save_total_limit: 2
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
+  dataloader_num_workers: 2
+
+engram:
+  enabled: true
+  layer_index_base: 0
+  layers: [2, 15]
+  max_ngram: 3
+  num_heads: 8
+  table_size_per_ngram: [100000, 100000]
+  tokenizer_compression_mode: demo
+  gating_mode: paper
+  init_equivalence: zero_output
+  lr_scale: 5.0
+  cache_dir: .cache/engram
+

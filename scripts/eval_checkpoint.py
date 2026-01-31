@@ -44,6 +44,7 @@ def main() -> None:
 
     data_cfg = DataConfig(
         mode=str(cfg["data"]["mode"]),
+        format=str(cfg["data"].get("format", "jsonl")),
         train_files=tuple(cfg["data"]["train_files"]),  # unused, but DataConfig requires it
         eval_files=tuple(cfg["data"].get("eval_files", ())),
         seq_len=int(cfg["data"]["seq_len"]),
@@ -51,6 +52,9 @@ def main() -> None:
         text_field=str(cfg["data"].get("text_field", "text")),
         prompt_field=str(cfg["data"].get("prompt_field", "prompt")),
         response_field=str(cfg["data"].get("response_field", "response")),
+        conversation_field=str(cfg["data"].get("conversation_field", "conversations")),
+        conversation_from_field=str(cfg["data"].get("conversation_from_field", "from")),
+        conversation_value_field=str(cfg["data"].get("conversation_value_field", "value")),
     )
     if not data_cfg.eval_files:
         raise ValueError("No eval_files specified in config.data.eval_files")
