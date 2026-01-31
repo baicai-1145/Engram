@@ -37,6 +37,8 @@ training:
   max_steps: 1000000
   lr_scheduler_type: cosine
   logging_steps: 10
+  # TensorBoard (Requires: pip install tensorboard)
+  report_to: ["tensorboard"]
   save_steps: 100
   eval_steps: 0
   save_total_limit: 10
@@ -46,6 +48,12 @@ training:
   # Ablation / speedup: train only `.engram.*` params (freeze Qwen weights).
   # Note: still backprops through the frozen backbone to update Engram.
   train_only_engram: true
+  # Detailed Engram stats (per layer): gate distribution + output RMS ratio.
+  log_engram_stats: true
+  # Quantiles are computed on a prefix sample of gate values to keep overhead bounded.
+  engram_stats_sample_tokens: 4096
+  # Expensive weight norms (including huge embedding weights). Use a low frequency.
+  weight_stats_every: 100
   dataloader_num_workers: 2
   dataloader_pin_memory: true
   dataloader_persistent_workers: true

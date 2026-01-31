@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import argparse
 import math
+import time
 from typing import Any, Dict
 
 import torch
@@ -21,6 +22,7 @@ from transformers import (
 )
 
 from src.engram.config import EngramConfig, normalize_layers
+from src.engram.module import EngramLayer
 from src.engram.param_groups import collect_engram_runtime_info, build_optimizer_param_groups
 from src.engram.patch_qwen import patch_model_with_engram
 from src.training.data import DataConfig, build_datasets, collate_causal_lm
@@ -41,10 +43,179 @@ def _require_keys(cfg: Dict[str, Any], keys) -> None:
 
 
 class EngramTrainer(Trainer):
-    def __init__(self, *args, optimizer_groups=None, scheduler_cfg=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        optimizer_groups=None,
+        scheduler_cfg=None,
+        log_engram_stats: bool = False,
+        engram_stats_sample_tokens: int = 4096,
+        weight_stats_every: int = 0,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._optimizer_groups = optimizer_groups
         self._scheduler_cfg = scheduler_cfg or {}
+        self._perf_tokens_since_step = 0
+        self._perf_examples_since_step = 0
+        self._perf_microsteps_since_step = 0
+        self._perf_last_opt_end = time.perf_counter()
+        self._last_step_metrics: Dict[str, float] = {}
+        self._weight_stats_every = int(weight_stats_every)
+        self._log_engram_stats = bool(log_engram_stats)
+        self._engram_stats_sample_tokens = int(engram_stats_sample_tokens)
+        self._logged_constant_stats = False
+
+    def log(self, logs: Dict[str, float], start_time: float | None = None) -> None:
+        # Add per-param-group LR to logs (useful for Engram's lr_scale).
+        if self.optimizer is not None:
+            for i, g in enumerate(self.optimizer.param_groups):
+                name = str(g.get("name", f"group{i}"))
+                lr = g.get("lr", None)
+                if lr is not None:
+                    logs[f"lr/{name}"] = float(lr)
+
+        # Log GPU memory to help diagnose "why batch size won't go up".
+        if torch.cuda.is_available():
+            try:
+                logs["gpu/mem_alloc_mb"] = float(torch.cuda.memory_allocated() / 1024 / 1024)
+                logs["gpu/mem_reserved_mb"] = float(torch.cuda.memory_reserved() / 1024 / 1024)
+                logs["gpu/mem_alloc_max_mb"] = float(torch.cuda.max_memory_allocated() / 1024 / 1024)
+                logs["gpu/mem_reserved_max_mb"] = float(torch.cuda.max_memory_reserved() / 1024 / 1024)
+            except Exception:
+                pass
+
+        # Perf + grad stats recorded at optimizer_step().
+        for k, v in self._last_step_metrics.items():
+            logs.setdefault(k, float(v))
+
+        # Engram forward stats (per patched layer).
+        if self._log_engram_stats:
+            for m in self.model.modules():
+                if not isinstance(m, EngramLayer):
+                    continue
+                lid = int(getattr(m, "layer_id", -1))
+                stats = getattr(m, "last_stats", None)
+                if not stats:
+                    continue
+                for sk, sv in stats.items():
+                    logs.setdefault(f"engram/l{lid}/{sk}", float(sv))
+
+        # One-time Engram constants (useful to correlate curves with table size / params).
+        if (not self._logged_constant_stats) and self.state.global_step >= 0:
+            self._logged_constant_stats = True
+            for m in self.model.modules():
+                if not isinstance(m, EngramLayer):
+                    continue
+                lid = int(getattr(m, "layer_id", -1))
+                ri = getattr(m, "runtime_info", None)
+                if ri is None:
+                    continue
+                logs.setdefault(f"engram/l{lid}/total_rows", float(getattr(ri, "total_rows", 0)))
+                logs.setdefault(f"engram/l{lid}/embed_params", float(getattr(ri, "embed_params", 0)))
+                logs.setdefault(f"engram/l{lid}/d_mem", float(getattr(ri, "d_mem", 0)))
+                logs.setdefault(f"engram/l{lid}/d_head", float(getattr(ri, "d_head", 0)))
+
+        # Optional: weight norms (expensive for huge embeddings). Run at a low frequency.
+        ws_every = int(self._weight_stats_every)
+        if ws_every > 0 and self.state.global_step > 0 and (self.state.global_step % ws_every == 0):
+            with torch.no_grad():
+                for m in self.model.modules():
+                    if not isinstance(m, EngramLayer):
+                        continue
+                    lid = int(getattr(m, "layer_id", -1))
+                    try:
+                        conv_w = m.short_conv.conv.weight.detach().float()
+                        key_w = m.key_proj.weight.detach().float()
+                        val_w = m.value_proj.weight.detach().float()
+                        qn_w = m.q_norm.weight.detach().float()
+                        kn_w = m.k_norm.weight.detach().float()
+                        emb_w = m.memory_embedding.embedding.weight.detach().float()
+
+                        logs[f"engram/l{lid}/conv_w_norm"] = float(conv_w.norm().item())
+                        logs[f"engram/l{lid}/conv_w_rms"] = float(conv_w.pow(2).mean().sqrt().item())
+                        logs[f"engram/l{lid}/key_w_norm"] = float(key_w.norm().item())
+                        logs[f"engram/l{lid}/key_w_rms"] = float(key_w.pow(2).mean().sqrt().item())
+                        logs[f"engram/l{lid}/value_w_norm"] = float(val_w.norm().item())
+                        logs[f"engram/l{lid}/value_w_rms"] = float(val_w.pow(2).mean().sqrt().item())
+                        logs[f"engram/l{lid}/qnorm_w_norm"] = float(qn_w.norm().item())
+                        logs[f"engram/l{lid}/qnorm_w_rms"] = float(qn_w.pow(2).mean().sqrt().item())
+                        logs[f"engram/l{lid}/knorm_w_norm"] = float(kn_w.norm().item())
+                        logs[f"engram/l{lid}/knorm_w_rms"] = float(kn_w.pow(2).mean().sqrt().item())
+                        # Potentially huge: embedding weight.
+                        logs[f"engram/l{lid}/embed_w_norm"] = float(emb_w.norm().item())
+                        logs[f"engram/l{lid}/embed_w_rms"] = float(emb_w.pow(2).mean().sqrt().item())
+                    except Exception:
+                        # Never fail training due to optional logging.
+                        pass
+
+        return super().log(logs, start_time=start_time)
+
+    def training_step(self, model, inputs, num_items_in_batch=None):
+        # Track throughput. Tokens/examples are counted on the microbatch level and
+        # flushed once per optimizer step.
+        try:
+            ids = inputs.get("input_ids", None)
+            if ids is not None:
+                self._perf_tokens_since_step += int(ids.numel())
+                self._perf_examples_since_step += int(ids.shape[0])
+                self._perf_microsteps_since_step += 1
+        except Exception:
+            pass
+
+        return super().training_step(model, inputs, num_items_in_batch=num_items_in_batch)
+
+    def optimizer_step(self, *args, **kwargs):
+        # Called once per optimizer update (after gradient accumulation).
+        now = time.perf_counter()
+        dt = max(1e-9, now - self._perf_last_opt_end)
+        tokens = int(self._perf_tokens_since_step)
+        examples = int(self._perf_examples_since_step)
+        microsteps = int(self._perf_microsteps_since_step)
+        self._perf_tokens_since_step = 0
+        self._perf_examples_since_step = 0
+        self._perf_microsteps_since_step = 0
+
+        step_metrics: Dict[str, float] = {
+            "perf/step_time_sec": float(dt),
+            "perf/tokens_per_sec": float(tokens / dt) if tokens > 0 else 0.0,
+            "perf/examples_per_sec": float(examples / dt) if examples > 0 else 0.0,
+            "perf/microsteps_per_opt_step": float(microsteps),
+        }
+
+        # Grad norms are expensive; compute only at logging cadence.
+        do_grad_stats = (self.args.logging_steps > 0) and (
+            self.state.global_step == 0 or (self.state.global_step % int(self.args.logging_steps) == 0)
+        )
+        if do_grad_stats and self.optimizer is not None:
+            for i, g in enumerate(self.optimizer.param_groups):
+                name = str(g.get("name", f"group{i}"))
+                sq = None
+                psq = None
+                for p in g.get("params", []):
+                    grad = getattr(p, "grad", None)
+                    if grad is None:
+                        continue
+                    v = grad.detach()
+                    if v.is_sparse:
+                        v = v.coalesce().values()
+                    s = v.float().pow(2).sum()
+                    sq = s if sq is None else (sq + s)
+                    # Param norm for the same group (tracked alongside grad norm).
+                    w = p.detach()
+                    if w.is_sparse:
+                        w = w.coalesce().values()
+                    ws = w.float().pow(2).sum()
+                    psq = ws if psq is None else (psq + ws)
+                if sq is not None:
+                    step_metrics[f"optim/grad_norm/{name}"] = float(torch.sqrt(sq).item())
+                if psq is not None:
+                    step_metrics[f"optim/param_norm/{name}"] = float(torch.sqrt(psq).item())
+
+        self._last_step_metrics = step_metrics
+        out = super().optimizer_step(*args, **kwargs)
+        self._perf_last_opt_end = time.perf_counter()
+        return out
 
     def create_optimizer(self):
         if self.optimizer is not None:
@@ -164,6 +335,15 @@ def main() -> None:
         pct = 100.0 * (trainable / max(1, total))
         print(f"[train] train_only_engram=true trainable_params={trainable} ({pct:.2f}%) frozen_params={frozen}")
 
+    # Enable Engram internal stat collection for visualization (TensorBoard).
+    if bool(tcfg.get("log_engram_stats", False)):
+        sample_n = int(tcfg.get("engram_stats_sample_tokens", 4096))
+        for m in model.modules():
+            if isinstance(m, EngramLayer):
+                m.collect_stats = True
+                m.stats_sample_tokens = sample_n
+        print(f"[engram] log_engram_stats=true sample_tokens={sample_n}")
+
     # Optimizer param groups (Engram lr*5 wd=0).
     groups, summaries = build_optimizer_param_groups(
         model,
@@ -214,7 +394,8 @@ def main() -> None:
         dataloader_pin_memory=bool(tcfg.get("dataloader_pin_memory", True)),
         dataloader_persistent_workers=bool(tcfg.get("dataloader_persistent_workers", True)),
         dataloader_prefetch_factor=int(tcfg.get("dataloader_prefetch_factor", 4)),
-        report_to=[],
+        report_to=list(tcfg.get("report_to", [])),
+        logging_dir=str(tcfg.get("logging_dir", os.path.join(run.run_dir, "tb"))),
         remove_unused_columns=False,
         seed=seed,
     )
@@ -226,6 +407,9 @@ def main() -> None:
         eval_dataset=eval_ds,
         data_collator=lambda batch: collate_causal_lm(batch, pad_token_id=int(tokenizer.pad_token_id)),
         optimizer_groups=groups,
+        log_engram_stats=bool(tcfg.get("log_engram_stats", False)),
+        engram_stats_sample_tokens=int(tcfg.get("engram_stats_sample_tokens", 4096)),
+        weight_stats_every=int(tcfg.get("weight_stats_every", 0)),
         scheduler_cfg={
             "lr_scheduler_type": tcfg.get("lr_scheduler_type", "cosine"),
             "warmup_steps": tcfg.get("warmup_steps", 0),

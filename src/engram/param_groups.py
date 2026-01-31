@@ -67,7 +67,9 @@ def build_optimizer_param_groups(
     summaries: List[ParamGroupSummary] = []
 
     if base_decay:
-        groups.append({"params": base_decay, "lr": float(base_lr), "weight_decay": float(weight_decay)})
+        groups.append(
+            {"name": "base_decay", "params": base_decay, "lr": float(base_lr), "weight_decay": float(weight_decay)}
+        )
         summaries.append(
             ParamGroupSummary(
                 name="base_decay",
@@ -77,7 +79,7 @@ def build_optimizer_param_groups(
             )
         )
     if base_no_decay:
-        groups.append({"params": base_no_decay, "lr": float(base_lr), "weight_decay": 0.0})
+        groups.append({"name": "base_no_decay", "params": base_no_decay, "lr": float(base_lr), "weight_decay": 0.0})
         summaries.append(
             ParamGroupSummary(
                 name="base_no_decay",
@@ -87,7 +89,14 @@ def build_optimizer_param_groups(
             )
         )
     if engram_fast:
-        groups.append({"params": engram_fast, "lr": float(base_lr) * float(engram_lr_scale), "weight_decay": 0.0})
+        groups.append(
+            {
+                "name": "engram_fast",
+                "params": engram_fast,
+                "lr": float(base_lr) * float(engram_lr_scale),
+                "weight_decay": 0.0,
+            }
+        )
         summaries.append(
             ParamGroupSummary(
                 name="engram_fast",
@@ -97,7 +106,7 @@ def build_optimizer_param_groups(
             )
         )
     if engram_slow:
-        groups.append({"params": engram_slow, "lr": float(base_lr), "weight_decay": 0.0})
+        groups.append({"name": "engram_slow", "params": engram_slow, "lr": float(base_lr), "weight_decay": 0.0})
         summaries.append(
             ParamGroupSummary(
                 name="engram_slow",

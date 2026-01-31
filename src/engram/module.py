@@ -101,6 +101,10 @@ class EngramLayer(nn.Module):
         self.d_mem = int(d_mem) if d_mem is not None else (self.hidden_size // 2)
         self.gating_mode = str(gating_mode)
         self.init_equivalence = str(init_equivalence)
+        # Optional lightweight stat collection for debugging/visualization.
+        self.collect_stats: bool = False
+        self.stats_sample_tokens: int = 4096
+        self.last_stats: dict[str, float] = {}
 
         if self.gating_mode not in ("paper", "demo"):
             raise ValueError(f"gating_mode must be 'paper' or 'demo', got {self.gating_mode!r}")
@@ -207,4 +211,36 @@ class EngramLayer(nn.Module):
 
         gated_v = gate * v
         y = self.short_conv(gated_v) + gated_v
+        if self.collect_stats and self.training:
+            # Keep stats cheap-ish:
+            # - exact RMS is fast
+            # - quantiles only on a small prefix sample
+            with torch.no_grad():
+                eps = 1e-12
+                hs_rms = torch.sqrt(hidden_states.float().pow(2).mean() + eps)
+                out_rms = torch.sqrt(y.float().pow(2).mean() + eps)
+                ratio = out_rms / (hs_rms + eps)
+
+                gate_flat = gate.squeeze(-1).reshape(-1).float()
+                n = int(self.stats_sample_tokens)
+                if n > 0 and gate_flat.numel() > n:
+                    gate_flat = gate_flat[:n]
+                try:
+                    p50 = torch.quantile(gate_flat, 0.50).item()
+                    p95 = torch.quantile(gate_flat, 0.95).item()
+                except Exception:
+                    p50 = float("nan")
+                    p95 = float("nan")
+
+                self.last_stats = {
+                    "hs_rms": float(hs_rms.item()),
+                    "out_rms": float(out_rms.item()),
+                    "out_to_hs_rms_ratio": float(ratio.item()),
+                    "gate_mean": float(gate_flat.mean().item()),
+                    "gate_std": float(gate_flat.std(unbiased=False).item()),
+                    "gate_min": float(gate_flat.min().item()),
+                    "gate_max": float(gate_flat.max().item()),
+                    "gate_p50": float(p50),
+                    "gate_p95": float(p95),
+                }
         return y
