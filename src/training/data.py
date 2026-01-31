@@ -128,9 +128,9 @@ def iter_jsonl(paths: Sequence[str]) -> Iterable[Dict[str, Any]]:
 @dataclass(frozen=True)
 class DataConfig:
     mode: str  # "cpt" | "sft"
-    format: str = "jsonl"  # "jsonl" | "parquet"
     train_files: Tuple[str, ...]
     eval_files: Tuple[str, ...] = ()
+    format: str = "jsonl"  # "jsonl" | "parquet"
     seq_len: int = 2048
     # For M1 we default to *no packing* to avoid cross-sample n-gram pollution.
     # If you enable packing later, also implement boundary handling for Engram.
