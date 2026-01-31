@@ -39,7 +39,7 @@ training:
   logging_steps: 10
   # TensorBoard (Requires: pip install tensorboard)
   report_to: ["tensorboard"]
-  save_steps: 100
+  save_steps: 200
   eval_steps: 0
   save_total_limit: 10
   bf16: true
@@ -71,5 +71,5 @@ engram:
   tokenizer_compression_mode: demo
   gating_mode: paper
   init_equivalence: zero_output
-  lr_scale: 5.0
+  lr_scale: 1.0
   cache_dir: .cache/engram
