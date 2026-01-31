@@ -93,6 +93,8 @@ def main() -> None:
         conversation_field=str(cfg["data"].get("conversation_field", "conversations")),
         conversation_from_field=str(cfg["data"].get("conversation_from_field", "from")),
         conversation_value_field=str(cfg["data"].get("conversation_value_field", "value")),
+        keep_in_memory=bool(cfg["data"].get("keep_in_memory", False)),
+        hf_cache_dir=str(cfg["data"].get("hf_cache_dir", "")),
     )
 
     train_ds, eval_ds = build_datasets(data_cfg, tokenizer=tokenizer)
@@ -129,9 +131,13 @@ def main() -> None:
         eval_steps=int(tcfg.get("eval_steps", 0)) or None,
         evaluation_strategy="steps" if eval_ds is not None and int(tcfg.get("eval_steps", 0)) > 0 else "no",
         save_total_limit=int(tcfg.get("save_total_limit", 2)),
+        save_only_model=bool(tcfg.get("save_only_model", False)),
         bf16=bool(tcfg.get("bf16", True)),
         fp16=bool(tcfg.get("fp16", False)),
         dataloader_num_workers=int(tcfg.get("dataloader_num_workers", 2)),
+        dataloader_pin_memory=bool(tcfg.get("dataloader_pin_memory", True)),
+        dataloader_persistent_workers=bool(tcfg.get("dataloader_persistent_workers", True)),
+        dataloader_prefetch_factor=int(tcfg.get("dataloader_prefetch_factor", 4)),
         report_to=[],
         remove_unused_columns=False,
         seed=seed,

@@ -142,6 +142,9 @@ class DataConfig:
     conversation_field: str = "conversations"
     conversation_from_field: str = "from"
     conversation_value_field: str = "value"
+    # HF datasets parquet loading knobs.
+    keep_in_memory: bool = False
+    hf_cache_dir: str = ""  # if set, passed to datasets.load_dataset(cache_dir=...)
 
 
 class CPTDataset(Dataset):
@@ -396,8 +399,21 @@ def build_datasets(cfg: DataConfig, *, tokenizer):
                 "Then `pip install datasets pyarrow` (or use conda-forge)."
             ) from e
 
-        train_hf = load_dataset("parquet", data_files=list(train_files), split="train")
-        eval_hf = load_dataset("parquet", data_files=list(eval_files), split="train") if eval_files else None
+        cache_dir = cfg.hf_cache_dir or None
+        train_hf = load_dataset(
+            "parquet", data_files=list(train_files), split="train", cache_dir=cache_dir, keep_in_memory=cfg.keep_in_memory
+        )
+        eval_hf = (
+            load_dataset(
+                "parquet",
+                data_files=list(eval_files),
+                split="train",
+                cache_dir=cache_dir,
+                keep_in_memory=cfg.keep_in_memory,
+            )
+            if eval_files
+            else None
+        )
 
         if cfg.mode == "cpt":
             return (

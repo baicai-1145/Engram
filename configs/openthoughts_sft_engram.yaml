@@ -16,9 +16,13 @@ data:
   conversation_field: conversations
   conversation_from_field: from
   conversation_value_field: value
+  # If you have enough RAM, set true to reduce random IO.
+  keep_in_memory: false
+  # Optional: set to a fast local SSD path to speed up datasets cache.
+  hf_cache_dir: ""
 
 training:
-  per_device_train_batch_size: 1
+  per_device_train_batch_size: 2
   gradient_accumulation_steps: 8
   learning_rate: 2.0e-5
   weight_decay: 0.0
@@ -33,6 +37,11 @@ training:
   fp16: false
   gradient_checkpointing: true
   dataloader_num_workers: 2
+  dataloader_pin_memory: true
+  dataloader_persistent_workers: true
+  dataloader_prefetch_factor: 4
+  # Reduce checkpoint IO stalls.
+  save_only_model: true
 
 engram:
   enabled: true
@@ -46,4 +55,3 @@ engram:
   init_equivalence: zero_output
   lr_scale: 5.0
   cache_dir: .cache/engram
-
