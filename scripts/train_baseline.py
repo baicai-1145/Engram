@@ -95,6 +95,9 @@ def main() -> None:
         conversation_value_field=str(cfg["data"].get("conversation_value_field", "value")),
         keep_in_memory=bool(cfg["data"].get("keep_in_memory", False)),
         hf_cache_dir=str(cfg["data"].get("hf_cache_dir", "")),
+        streaming=bool(cfg["data"].get("streaming", False)),
+        shuffle_buffer_size=int(cfg["data"].get("shuffle_buffer_size", 0)),
+        streaming_seed=int(cfg["data"].get("streaming_seed", seed)),
     )
 
     train_ds, eval_ds = build_datasets(data_cfg, tokenizer=tokenizer)

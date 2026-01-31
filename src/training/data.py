@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 from torch.utils.data import Dataset
+from torch.utils.data import IterableDataset as TorchIterableDataset
 
 
 def expand_data_files(paths: Sequence[str]) -> Tuple[str, ...]:
@@ -145,6 +146,10 @@ class DataConfig:
     # HF datasets parquet loading knobs.
     keep_in_memory: bool = False
     hf_cache_dir: str = ""  # if set, passed to datasets.load_dataset(cache_dir=...)
+    # Streaming mode (bounded RAM via shuffle buffer, no random access).
+    streaming: bool = False
+    shuffle_buffer_size: int = 0
+    streaming_seed: int = 0
 
 
 class CPTDataset(Dataset):
@@ -332,6 +337,102 @@ class SFTParquetDataset(Dataset):
         return {"input_ids": torch.tensor(input_ids, dtype=torch.long), "labels": torch.tensor(labels, dtype=torch.long)}
 
 
+class CPTStreamingDataset(TorchIterableDataset):
+    """CPT dataset backed by HF streaming `datasets.IterableDataset` (parquet).
+
+    Provides bounded RAM behavior with `shuffle_buffer_size` at the HF dataset layer.
+    """
+
+    def __init__(self, *, tokenizer, hf_iterable, seq_len: int, text_field: str):
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.hf = hf_iterable
+        self.seq_len = int(seq_len)
+        self.text_field = str(text_field)
+
+    def __iter__(self):
+        # Avoid duplicated samples when DataLoader has multiple workers.
+        it = self.hf
+        wi = torch.utils.data.get_worker_info()
+        if wi is not None:
+            try:
+                it = it.shard(num_shards=wi.num_workers, index=wi.id)
+            except Exception:
+                pass
+
+        for r in it:
+            text = r.get(self.text_field, None)
+            if isinstance(text, list) and self.text_field == "conversations":
+                text = render_conversations_simple(text)
+            if not isinstance(text, str):
+                continue
+            ids = self.tokenizer(text, add_special_tokens=False).input_ids
+            if getattr(self.tokenizer, "eos_token_id", None) is not None:
+                ids = ids + [int(self.tokenizer.eos_token_id)]
+            ids = ids[: self.seq_len]
+            yield {"input_ids": torch.tensor(ids, dtype=torch.long), "labels": torch.tensor(ids, dtype=torch.long)}
+
+
+class SFTStreamingDataset(TorchIterableDataset):
+    """SFT dataset backed by HF streaming `datasets.IterableDataset` (parquet)."""
+
+    def __init__(
+        self,
+        *,
+        tokenizer,
+        hf_iterable,
+        seq_len: int,
+        prompt_field: str,
+        response_field: str,
+        conversation_field: str,
+        conversation_from_field: str,
+        conversation_value_field: str,
+    ):
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.hf = hf_iterable
+        self.seq_len = int(seq_len)
+        self.prompt_field = str(prompt_field)
+        self.response_field = str(response_field)
+        self.conversation_field = str(conversation_field)
+        self.conversation_from_field = str(conversation_from_field)
+        self.conversation_value_field = str(conversation_value_field)
+
+    def __iter__(self):
+        it = self.hf
+        wi = torch.utils.data.get_worker_info()
+        if wi is not None:
+            try:
+                it = it.shard(num_shards=wi.num_workers, index=wi.id)
+            except Exception:
+                pass
+
+        for r in it:
+            prompt = r.get(self.prompt_field, None)
+            response = r.get(self.response_field, None)
+            if not isinstance(prompt, str) or not isinstance(response, str):
+                conv = r.get(self.conversation_field, None)
+                if not isinstance(conv, list):
+                    continue
+                try:
+                    prompt, response = extract_prompt_response_from_conversations(
+                        conv, from_field=self.conversation_from_field, value_field=self.conversation_value_field
+                    )
+                except Exception:
+                    continue
+
+            prompt_ids = self.tokenizer(prompt, add_special_tokens=False).input_ids
+            response_ids = self.tokenizer(response, add_special_tokens=False).input_ids
+            if getattr(self.tokenizer, "eos_token_id", None) is not None:
+                response_ids = response_ids + [int(self.tokenizer.eos_token_id)]
+
+            input_ids = (prompt_ids + response_ids)[: self.seq_len]
+            labels = ([-100] * min(len(prompt_ids), self.seq_len)) + response_ids
+            labels = labels[: self.seq_len]
+
+            yield {"input_ids": torch.tensor(input_ids, dtype=torch.long), "labels": torch.tensor(labels, dtype=torch.long)}
+
+
 def collate_causal_lm(batch: List[Dict[str, torch.Tensor]], *, pad_token_id: int) -> Dict[str, torch.Tensor]:
     # Dynamic pad to max length in the batch.
     max_len = max(int(x["input_ids"].numel()) for x in batch)
@@ -400,20 +501,69 @@ def build_datasets(cfg: DataConfig, *, tokenizer):
             ) from e
 
         cache_dir = cfg.hf_cache_dir or None
+        if cfg.streaming:
+            train_it = load_dataset(
+                "parquet",
+                data_files=list(train_files),
+                split="train",
+                cache_dir=cache_dir,
+                streaming=True,
+            )
+            if int(cfg.shuffle_buffer_size) > 0:
+                train_it = train_it.shuffle(buffer_size=int(cfg.shuffle_buffer_size), seed=int(cfg.streaming_seed))
+
+            eval_it = (
+                load_dataset(
+                    "parquet",
+                    data_files=list(eval_files),
+                    split="train",
+                    cache_dir=cache_dir,
+                    streaming=True,
+                )
+                if eval_files
+                else None
+            )
+
+            if cfg.mode == "cpt":
+                return (
+                    CPTStreamingDataset(tokenizer=tokenizer, hf_iterable=train_it, seq_len=cfg.seq_len, text_field=cfg.text_field),
+                    CPTStreamingDataset(tokenizer=tokenizer, hf_iterable=eval_it, seq_len=cfg.seq_len, text_field=cfg.text_field)
+                    if eval_it is not None
+                    else None,
+                )
+            if cfg.mode == "sft":
+                return (
+                    SFTStreamingDataset(
+                        tokenizer=tokenizer,
+                        hf_iterable=train_it,
+                        seq_len=cfg.seq_len,
+                        prompt_field=cfg.prompt_field,
+                        response_field=cfg.response_field,
+                        conversation_field=cfg.conversation_field,
+                        conversation_from_field=cfg.conversation_from_field,
+                        conversation_value_field=cfg.conversation_value_field,
+                    ),
+                    SFTStreamingDataset(
+                        tokenizer=tokenizer,
+                        hf_iterable=eval_it,
+                        seq_len=cfg.seq_len,
+                        prompt_field=cfg.prompt_field,
+                        response_field=cfg.response_field,
+                        conversation_field=cfg.conversation_field,
+                        conversation_from_field=cfg.conversation_from_field,
+                        conversation_value_field=cfg.conversation_value_field,
+                    )
+                    if eval_it is not None
+                    else None,
+                )
+            raise ValueError(f"Unknown data mode: {cfg.mode!r} (expected 'cpt' or 'sft')")
+
         train_hf = load_dataset(
             "parquet", data_files=list(train_files), split="train", cache_dir=cache_dir, keep_in_memory=cfg.keep_in_memory
         )
-        eval_hf = (
-            load_dataset(
-                "parquet",
-                data_files=list(eval_files),
-                split="train",
-                cache_dir=cache_dir,
-                keep_in_memory=cfg.keep_in_memory,
-            )
-            if eval_files
-            else None
-        )
+        eval_hf = load_dataset(
+            "parquet", data_files=list(eval_files), split="train", cache_dir=cache_dir, keep_in_memory=cfg.keep_in_memory
+        ) if eval_files else None
 
         if cfg.mode == "cpt":
             return (

@@ -55,6 +55,11 @@ def main() -> None:
         conversation_field=str(cfg["data"].get("conversation_field", "conversations")),
         conversation_from_field=str(cfg["data"].get("conversation_from_field", "from")),
         conversation_value_field=str(cfg["data"].get("conversation_value_field", "value")),
+        keep_in_memory=bool(cfg["data"].get("keep_in_memory", False)),
+        hf_cache_dir=str(cfg["data"].get("hf_cache_dir", "")),
+        streaming=bool(cfg["data"].get("streaming", False)),
+        shuffle_buffer_size=int(cfg["data"].get("shuffle_buffer_size", 0)),
+        streaming_seed=int(cfg["data"].get("streaming_seed", seed)),
     )
     if not data_cfg.eval_files:
         raise ValueError("No eval_files specified in config.data.eval_files")
