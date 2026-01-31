@@ -143,7 +143,6 @@ def main() -> None:
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         data_collator=lambda batch: collate_causal_lm(batch, pad_token_id=int(tokenizer.pad_token_id)),
-        tokenizer=tokenizer,
     )
 
     train_result = trainer.train()
