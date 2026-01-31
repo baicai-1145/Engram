@@ -97,3 +97,33 @@ def as_dict(obj: Any) -> Dict[str, Any]:
         return obj
     raise TypeError(f"Unsupported config object type: {type(obj)}")
 
+
+def make_training_arguments(**kwargs):
+    """Create `transformers.TrainingArguments` compatibly across transformers versions.
+
+    Transformers v5 renamed/removed some args (e.g. evaluation_strategy -> eval_strategy,
+    overwrite_output_dir removed). We keep scripts stable by filtering/mapping kwargs.
+    """
+    import inspect
+    from transformers import TrainingArguments
+
+    sig = inspect.signature(TrainingArguments.__init__)
+    supported = set(sig.parameters.keys())
+
+    aliases = {
+        # transformers<=4 -> transformers>=5
+        "evaluation_strategy": "eval_strategy",
+    }
+
+    filtered: Dict[str, Any] = {}
+    for k, v in kwargs.items():
+        if k in supported:
+            filtered[k] = v
+            continue
+        ak = aliases.get(k)
+        if ak and ak in supported:
+            filtered[ak] = v
+            continue
+        # silently ignore unknown keys for forward compatibility
+
+    return TrainingArguments(**filtered)

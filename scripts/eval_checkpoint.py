@@ -15,7 +15,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
 
 from src.training.data import DataConfig, build_datasets, collate_causal_lm
-from src.training.trainer_utils import load_yaml, save_json, seed_everything
+from src.training.trainer_utils import load_yaml, make_training_arguments, save_json, seed_everything
 
 
 def _require_keys(cfg: Dict[str, Any], keys) -> None:
@@ -70,7 +70,7 @@ def main() -> None:
     if getattr(model.config, "use_cache", None) is True:
         model.config.use_cache = False
 
-    targs = TrainingArguments(
+    targs = make_training_arguments(
         output_dir="/tmp/engram_eval_out",
         per_device_eval_batch_size=int(cfg.get("training", {}).get("per_device_eval_batch_size", 1)),
         bf16=bool(cfg.get("training", {}).get("bf16", True)),

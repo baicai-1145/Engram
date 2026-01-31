@@ -24,7 +24,14 @@ from src.engram.config import EngramConfig, normalize_layers
 from src.engram.param_groups import collect_engram_runtime_info, build_optimizer_param_groups
 from src.engram.patch_qwen import patch_model_with_engram
 from src.training.data import DataConfig, build_datasets, collate_causal_lm
-from src.training.trainer_utils import create_run_dir, dump_yaml, load_yaml, save_json, seed_everything
+from src.training.trainer_utils import (
+    create_run_dir,
+    dump_yaml,
+    load_yaml,
+    make_training_arguments,
+    save_json,
+    seed_everything,
+)
 
 
 def _require_keys(cfg: Dict[str, Any], keys) -> None:
@@ -162,9 +169,8 @@ def main() -> None:
     if getattr(model.config, "use_cache", None) is True:
         model.config.use_cache = False
 
-    training_args = TrainingArguments(
+    training_args = make_training_arguments(
         output_dir=run.run_dir,
-        overwrite_output_dir=False,
         per_device_train_batch_size=int(tcfg["per_device_train_batch_size"]),
         per_device_eval_batch_size=int(tcfg.get("per_device_eval_batch_size", tcfg["per_device_train_batch_size"])),
         gradient_accumulation_steps=int(tcfg.get("gradient_accumulation_steps", 1)),

@@ -18,7 +18,14 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
 
 from src.training.data import DataConfig, build_datasets, collate_causal_lm
-from src.training.trainer_utils import create_run_dir, dump_yaml, load_yaml, seed_everything, save_json
+from src.training.trainer_utils import (
+    create_run_dir,
+    dump_yaml,
+    load_yaml,
+    make_training_arguments,
+    seed_everything,
+    save_json,
+)
 
 
 def _require_keys(cfg: Dict[str, Any], keys) -> None:
@@ -107,9 +114,8 @@ def main() -> None:
         model.config.use_cache = False
 
     tcfg = cfg["training"]
-    training_args = TrainingArguments(
+    training_args = make_training_arguments(
         output_dir=run.run_dir,
-        overwrite_output_dir=False,
         per_device_train_batch_size=int(tcfg["per_device_train_batch_size"]),
         per_device_eval_batch_size=int(tcfg.get("per_device_eval_batch_size", tcfg["per_device_train_batch_size"])),
         gradient_accumulation_steps=int(tcfg.get("gradient_accumulation_steps", 1)),
