@@ -43,6 +43,9 @@ training:
   bf16: true
   fp16: false
   gradient_checkpointing: true
+  # Ablation / speedup: train only `.engram.*` params (freeze Qwen weights).
+  # Note: still backprops through the frozen backbone to update Engram.
+  train_only_engram: true
   dataloader_num_workers: 2
   dataloader_pin_memory: true
   dataloader_persistent_workers: true

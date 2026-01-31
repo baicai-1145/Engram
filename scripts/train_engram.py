@@ -146,6 +146,24 @@ def main() -> None:
     patched = patch_model_with_engram(model, cfg=engram_cfg, tokenizer=tokenizer)
     print(f"[engram] patched_blocks={patched.num_patched} layers={patched.code_layers} block_path={patched.block_path}")
 
+    # Optional ablation / speedup: freeze the backbone and train only Engram params.
+    # This reduces optimizer state + weight-grad compute, but still backprops through later layers
+    # to update Engram (so it won't be a 10x speedup).
+    if bool(tcfg.get("train_only_engram", False)):
+        trainable = 0
+        frozen = 0
+        for name, p in model.named_parameters():
+            if ".engram." in name:
+                p.requires_grad_(True)
+                trainable += p.numel()
+            else:
+                if p.requires_grad:
+                    p.requires_grad_(False)
+                frozen += p.numel()
+        total = trainable + frozen
+        pct = 100.0 * (trainable / max(1, total))
+        print(f"[train] train_only_engram=true trainable_params={trainable} ({pct:.2f}%) frozen_params={frozen}")
+
     # Optimizer param groups (Engram lr*5 wd=0).
     groups, summaries = build_optimizer_param_groups(
         model,
