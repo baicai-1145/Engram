@@ -3,11 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence, Tuple
 
+import threading
 import torch
 import torch.nn as nn
 
 from src.engram.config import EngramConfig
 from src.engram.module import EngramLayer
+
+# Per-thread storage for the "current" input_ids during forward/generate.
+# This is required for concurrency (e.g. API server) because using a shared
+# attribute on the model object will race across requests/threads.
+_tls = threading.local()
 
 
 @dataclass(frozen=True)
@@ -51,8 +57,8 @@ def patch_model_with_engram(model: nn.Module, *, cfg: EngramConfig, tokenizer) -
     """Inject Engram into specific transformer blocks using forward_pre_hook.
 
     Implementation detail:
-    - We stash input_ids on the model object during model.forward().
-    - Each patched block reads model._engram_input_ids during its pre-hook.
+    - We stash input_ids in thread-local storage during model.forward().
+    - Each patched block reads the thread-local input_ids during its pre-hook.
     """
     if not cfg.enabled:
         return PatchedInfo(code_layers=tuple(), block_path="", num_patched=0)
@@ -71,10 +77,13 @@ def patch_model_with_engram(model: nn.Module, *, cfg: EngramConfig, tokenizer) -
 
         def wrapped_forward(*args, **kwargs):
             if "input_ids" in kwargs and kwargs["input_ids"] is not None:
-                model._engram_input_ids = kwargs["input_ids"]
+                _tls.input_ids = kwargs["input_ids"]
             elif args:
                 # Some models call forward(input_ids, ...)
-                model._engram_input_ids = args[0]
+                _tls.input_ids = args[0]
+            else:
+                # Avoid reusing a previous request's ids in the same thread.
+                _tls.input_ids = None
             return orig_forward(*args, **kwargs)
 
         model.forward = wrapped_forward  # type: ignore[assignment]
@@ -130,7 +139,7 @@ def patch_model_with_engram(model: nn.Module, *, cfg: EngramConfig, tokenizer) -
         )
         block.engram.to(dtype=backbone_dtype)  # type: ignore[attr-defined]
 
-        def _make_prehook(model_ref: nn.Module):
+        def _make_prehook():
             def prehook(module: nn.Module, args, kwargs):
                 if not hasattr(module, "engram"):
                     return args, kwargs
@@ -143,9 +152,20 @@ def patch_model_with_engram(model: nn.Module, *, cfg: EngramConfig, tokenizer) -
                 else:
                     return args, kwargs
 
-                input_ids = getattr(model_ref, "_engram_input_ids", None)
+                input_ids = getattr(_tls, "input_ids", None)
                 if input_ids is None:
                     return args, kwargs
+
+                # If concurrency/mis-stash happens, fail loudly with a helpful message.
+                if hasattr(hs, "shape") and hasattr(input_ids, "shape"):
+                    ht = int(hs.shape[1])
+                    it = int(input_ids.shape[1])
+                    if ht != it:
+                        raise RuntimeError(
+                            f"Engram input_ids length mismatch: hidden_states T={ht} vs input_ids T={it}. "
+                            "This usually indicates concurrent requests sharing a single model without "
+                            "thread-local input_id stashing (or a custom model forward path)."
+                        )
 
                 y = module.engram(hidden_states=hs, input_ids=input_ids)  # type: ignore[attr-defined]
                 hs2 = hs + y.to(dtype=hs.dtype)
@@ -158,7 +178,7 @@ def patch_model_with_engram(model: nn.Module, *, cfg: EngramConfig, tokenizer) -
 
             return prehook
 
-        block.register_forward_pre_hook(_make_prehook(model), with_kwargs=True)
+        block.register_forward_pre_hook(_make_prehook(), with_kwargs=True)
         patched += 1
 
     return PatchedInfo(code_layers=tuple(code_layers), block_path=block_path, num_patched=patched)
