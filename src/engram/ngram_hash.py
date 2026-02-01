@@ -126,7 +126,11 @@ class NgramHashMapping(torch.nn.Module):
         pad_val = int(self.cfg.pad_id)
         for k in range(1, self.cfg.max_ngram):
             pad = torch.full((B, k), pad_val, dtype=torch.long, device=x.device)
-            shifted = torch.cat([pad, x[:, : T - k]], dim=1)
+            # Keep output length exactly T (matches demo behavior).
+            # For short sequences (e.g. generate() with use_cache=True => T=1),
+            # T-k can be <=0; we still want a (B,T) tensor after left padding.
+            take = max(0, T - k)
+            shifted = torch.cat([pad, x[:, :take]], dim=1)[:, :T]
             base_shifts.append(shifted)
 
         all_hashes: List[torch.Tensor] = []
@@ -153,4 +157,3 @@ class NgramHashMapping(torch.nn.Module):
             # (can't assert values, but can assert finite range)
             assert int(out.min()) >= 0
         return out
-
